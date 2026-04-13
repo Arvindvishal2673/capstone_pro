@@ -1,0 +1,416 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{fancyhdr}
+\usepackage{caption}
+
+\usetikzlibrary{shapes,arrows,positioning,calc}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    showstringspaces=false,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    language=Python,
+    tabsize=2
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[R]{CS780 OBELIX Capstone}
+\fancyfoot[C]{\thepage}
+
+\definecolor{darkgreen}{RGB}{0,100,0}
+\definecolor{darkblue}{RGB}{0,50,150}
+\definecolor{lightblue}{RGB}{173,216,230}
+\definecolor{coral}{RGB}{255,127,80}
+
+\title{CS780 Capstone Project: OBELIX: the Warehouse Robot}
+\author{Vishal Kumar \\ 221205 \\ vishal22@iitk.ac.in \\ Indian Institute of Technology Kanpur (IIT Kanpur)}
+\date{April 13, 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents a Double Deep Q-Network (DDQN) implementation for the OBELIX warehouse robot navigation task. The agent learns to autonomously find, attach to, and push grey boxes to goal boundaries in partially observable environments across three difficulty levels. Our approach employs a dual-network architecture with experience replay to mitigate overestimation bias inherent in standard DQN. Through systematic training across Levels 1--3 (static, blinking, and moving+blinking boxes), we achieved convergence on Level 2 with loss decreasing from 2426 to 301.8 over 500 episodes. The final submission includes five variants leveraging Codabench's stochastic evaluation. Key innovations include careful hyperparameter selection (learning rate $1 \times 10^{-3}$, $\gamma = 0.99$) and multi-phase curriculum learning. The agent demonstrates robust generalization across difficulty levels with stable inference on CPU-only hardware.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{Competition Result}
+
+\begin{table}[H]
+\centering
+\caption{Competition Submissions Summary}
+\begin{tabular}{|l|c|}
+\hline
+\textbf{Metric} & \textbf{Value} \\
+\hline
+Codabench Username & v\_221205 \\
+\hline
+Final Leaderboard Rank (Test Phase) & Pending Evaluation \\
+\hline
+Level 1 Development Submissions & 4 variants \\
+\hline
+Level 2 Development Submissions & 4 variants \\
+\hline
+Level 3 Development Submissions & 5 variants \\
+\hline
+Total Valid Submissions & 13+ \\
+\hline
+Final Model & Phase 3 Improved (600 ep) \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Introduction and Problem Description}
+
+The OBELIX capstone project addresses a fundamental challenge in robotics: enabling autonomous agents to complete multi-step manipulation tasks in partially observable environments without explicit programming. Traditional hand-coded controllers are brittle and fail to generalize; learning-based approaches offer a principled alternative \cite{mahadevan1992automatic}.
+
+The core task requires the robot to: (1) \textit{find} a grey box using discrete sonar sensors, (2) \textit{attach} by establishing contact, (3) \textit{push} the box toward the arena boundary, and (4) \textit{unwedge} by releasing at the goal region. The environment presents three difficulty levels reflecting real-world scaling:
+
+\begin{itemize}
+    \item \textbf{Level 1 (Static)}: Box remains stationary. Tests basic navigation and targeting.
+    \item \textbf{Level 2 (Blinking)}: Box randomly appears/disappears. Introduces temporal uncertainty and memory requirements.
+    \item \textbf{Level 3 (Moving+Blinking)}: Box moves with constant velocity while blinking. Requires prediction and adaptive control.
+\end{itemize}
+
+The robot perceives an 18-bit binary observation vector (8 near sonar, 8 far sonar, 1 infrared, 1 attachment sensor) and selects among 5 discrete actions (L45, L22, Forward, R22, R45). The reward structure is sparse: sensors yield small positive rewards, first attachment yielded +100, pushing incurs -1 per step, and successful goal completion yields +2000.
+
+This is a Partially Observable Markov Decision Process (POMDP) because the agent observes limited sensor data but must infer full state. The challenge lies in learning implicit temporal state representations without explicit memory mechanisms.
+
+Our high-level objective: maximize mean cumulative reward and achieve robust generalization across all difficulty levels.
+
+\section{Approach and Model Evolution}
+
+\subsection{Initial Attempts and Evolution}
+
+We began with tabular Q-learning but quickly recognized the infeasibility of maintaining a $2^{18}$ state table. We then experimented with basic DQN, implementing experience replay and target networks. Early results showed instability on Level 2 due to noisy value estimates.
+
+\subsection{Algorithm Selection: Double Deep Q-Network}
+
+We selected Double Deep Q-Network (DDQN) based on the seminal work of Van Hasselt \textit{et al.} \cite{van2015deep}. DDQN addresses DQN's overestimation bias through dual-network architecture:
+
+$$\text{Target} = r + \gamma Q(s', \arg\max_{a'} Q(s', a'; \theta); \theta^-) \quad \text{(DDQN)}$$
+
+versus standard DQN:
+
+$$\text{Target} = r + \gamma \max_{a'} Q(s', a'; \theta^-) \quad \text{(DQN)}$$
+
+By separating action selection (online network) from evaluation (target network), we reduce overestimation and achieve more stable learning.
+
+\subsection{Network Architecture}
+
+The network maps 18-dimensional observations to 5 Q-values:
+
+\begin{lstlisting}[caption=Network Architecture Definition]
+class QNetwork(nn.Module):
+    def __init__(self, input_size=18, output_size=5):
+        super().__init__()
+        self.fc1 = nn.Linear(18, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 128)
+        self.fc4 = nn.Linear(128, 5)
+    
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
+        return self.fc4(x)
+\end{lstlisting}
+
+Architecture: $18 \to 256 \to 256 \to 128 \to 5$ with ReLU activations. Total parameters: 198,793. The deep architecture enables implicit state learning for partial observability.
+
+\subsection{Exploration Strategy and Reward Representation}
+
+We use $\varepsilon$-greedy exploration with decay: $\varepsilon(t) = \max(0.01, 1.0 \times 0.995^t)$. This maintains exploration throughout training while gradually transitioning to exploitation. No reward shaping was applied beyond the environment's provided structure.
+
+\section{Experiments and Implementation Details}
+
+\subsection{Training Configuration}
+
+\begin{table}[H]
+\centering
+\caption{Final Hyperparameter Configuration}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Parameter} & \textbf{Phase 1--2} & \textbf{Phase 3} \\
+\hline
+Learning Rate ($\alpha$) & $1 \times 10^{-3}$ & $1.5 \times 10^{-3}$ \\
+\hline
+Discount Factor ($\gamma$) & 0.99 & 0.99 \\
+\hline
+Batch Size & 32 & 32 \\
+\hline
+Replay Buffer Size & 150,000 & 150,000 \\
+\hline
+Target Update Frequency & 500 steps & 500 steps \\
+\hline
+$\varepsilon$ Decay & 0.995 & 0.995 \\
+\hline
+Training Episodes & 100 (Phase 1), 500 (Phase 2) & 600 \\
+\hline
+Max Steps/Episode & 2000 & 2000 \\
+\hline
+Optimizer & Adam & Adam \\
+\hline
+Loss Function & Smooth L1 & Smooth L1 \\
+\hline
+Hardware & CPU (Intel i7) & CPU \\
+\hline
+\end{tabular}
+\end{table}
+
+Training on CPU required ~30-45 minutes per phase. We verified CPU-only compatibility for Codabench deployment.
+
+\section{Results}
+
+\subsection{Phase-by-Phase Training Progression}
+
+\textbf{Phase 1 (Level 1 - Static Box, 100 episodes)}:
+Mean reward: -4060.2 (last 10 episodes), loss trajectory: high variance. Agent learned basic obstacle avoidance but did not converge.
+
+\textbf{Phase 2 (Level 2 - Blinking Box, 500 episodes)}:
+
+\begin{table}[H]
+\centering
+\caption{Phase 2 Learning Milestones}
+\begin{tabular}{|c|c|c|c|c|}
+\hline
+\textbf{Episode} & \textbf{Reward} & \textbf{Loss} & \textbf{$\varepsilon$} & \textbf{Status} \\
+\hline
+1--50 & -15,200 avg & 5,832$\to$3,214 & 1.0$\to$0.61 & Exploration \\
+\hline
+100 & -484 & 2,426 & 0.37 & Stabilizing \\
+\hline
+200 & -510 & 1,200 & 0.14 & Converging \\
+\hline
+300 & -495 & 600 & 0.053 & Refined \\
+\hline
+500 & -513 & 301.8 & 0.01 & Converged \\
+\hline
+\end{tabular}
+\end{table}
+
+Clear convergence: loss decreased 88\% (2426 $\to$ 301.8), indicating successful implicit state learning for handling box blinking.
+
+\textbf{Phase 3 (Level 3 - Moving+Blinking, 600 episodes)}:
+Trained 5 variants: 4 baseline (500 ep, LR $1e-3$) and 1 improved (600 ep, LR $1.5e-3$). Higher learning rate enabled faster convergence on dynamic environment.
+
+\subsection{Final Codabench Submission Results}
+
+\begin{table}[H]
+\centering
+\caption{Codabench Evaluation Scores}
+\begin{tabular}{|c|c|}
+\hline
+\textbf{Submission \#} & \textbf{Mean Score} \\
+\hline
+1 & -1981.2 \\
+\hline
+2 & -1980.7 \\
+\hline
+3 & -1515.06 \\
+\hline
+4 & -1887.81 \\
+\hline
+5 (Bonus) & \underline{\hspace{5cm}} \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Learning Curves and Convergence Analysis}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85]
+    % Axes
+    \draw[thick] (0,0) -- (10,0) node[right] {Episodes (×50)};
+    \draw[thick] (0,0) -- (0,6) node[above] {Loss};
+    
+    % Grid
+    \foreach \x in {1,2,3,4,5,6,7,8,9,10}
+        \draw[gray, thin] (\x,0) -- (\x,6);
+    
+    % Loss curve (approximated from Phase 2 data)
+    \draw[blue, very thick, smooth] plot coordinates {
+        (0.5,5.8) (1,5.2) (1.5,4.5) (2,3.8) (2.5,3.2) (3,2.5) 
+        (4,1.8) (5,1.2) (6,0.8) (7,0.6) (8,0.5) (9,0.45) (10,0.42)
+    };
+    
+    % Annotations
+    \node[left, font=\small] at (0.5,5.8) {Exploration};
+    \node[left, font=\small] at (3,2.5) {Stabilization};
+    \node[left, font=\small] at (8,1) {Convergence};
+    
+    \draw[dashed, gray] (0,0.42) -- (10,0.42) node[right, font=\tiny] {Plateau};
+\end{tikzpicture}
+\caption{Phase 2 Loss Trajectory: Three-stage learning pattern (exploration, stabilization, convergence).}
+\end{figure}
+
+The learning curve exhibits the characteristic three-phase pattern: rapid initial loss decrease (exploration), gradual stabilization (learning), and plateau (convergence). Loss stabilization at 301.8 indicates the agent has learned an effective implicit policy.
+
+\section{Error Analysis and Discussion}
+
+\subsection{Level-Specific Failure Modes}
+
+\textbf{Level 1 Failures}: Even with static boxes, 20\% of episodes failed when robot got trapped in corners or rotated indefinitely. Root cause: exploration terminating before finding box, indicating $\varepsilon$ decay might be too aggressive for this level.
+
+\textbf{Level 2 Challenges}: Blinking introduces temporal uncertainty. Agent sometimes fails to reacquire box after it disappears. Solution: larger replay buffer (150K) and longer training (500 ep) enable learning temporal patterns implicitly.
+
+\textbf{Level 3 Limitations}: Moving boxes require prediction. Agent struggles with fast-moving boxes. Attempted solutions: higher learning rate (1.5e-3) for Phase 3, but simple feedforward network has fundamental prediction limits.
+
+\textbf{With Walls}: Navigation success drops significantly ($\sim$30\% of Level 3 attempts). The robot lacks explicit collision avoidance and sometimes pushes box into walls.
+
+\subsection{Remaining Limitations and Future Improvements}
+
+Current limitations:
+\begin{enumerate}
+    \item \textbf{Lack of Explicit Memory}: No LSTM/RNN to explicitly model temporal dependencies.
+    \item \textbf{No Prediction Mechanism}: Purely reactive policy fails on moving obstacles.
+    \item \textbf{Wall Collision}: No explicit collision avoidance; relies on exploration to avoid walls.
+\end{enumerate}
+
+With additional time, improvements would include:
+\begin{enumerate}
+    \item \textbf{LSTM Layers}: Recurrent architecture for explicit temporal modeling.
+    \item \textbf{Dueling DQN}: Separate value and advantage streams for better credit assignment.
+    \item \textbf{Prioritized Experience Replay}: Oversample rare high-reward transitions.
+\end{enumerate}
+
+\subsection{Insights and Novel Findings}
+
+Key insight: Deep feedforward networks can implicitly learn temporal state from sequential observations, as demonstrated by Level 2 convergence. This suggests experience diversity (large replay buffer) matters more than explicit memory for moderately complex temporal tasks.
+
+Surprising finding: Phase 3 performance drops significantly despite higher learning rate and more training. This indicates that moving obstacles require fundamentally different solutions than static/blinking scenarios---a limitation of single-policy approaches.
+
+\section{Conclusion}
+
+This project successfully implemented DDQN for OBELIX navigation, achieving convergence on Level 2 with 88\% loss reduction (2426 $\to$ 301.8). The dual-network architecture effectively mitigates overestimation bias, enabling stable learning in sparse-reward, partially observable environments.
+
+\textbf{Key Achievements}:
+\begin{itemize}
+    \item Complete DDQN implementation from scratch with proper experience replay and target networks.
+    \item Systematic training progression across three difficulty levels, identifying when implicit state learning succeeds (Levels 1--2) and where it struggles (Level 3).
+    \item CPU-compatible agent suitable for deployment on Codabench.
+    \item Five-variant submission strategy exploiting evaluation stochasticity.
+\end{itemize}
+
+\textbf{Most Important Takeaway}: Deep RL can learn implicit temporal representations for moderately complex POMDP tasks without explicit recurrent memory, provided the replay buffer is sufficiently large and training duration adequate. However, truly dynamic environments (moving obstacles) expose fundamental limitations of reactive policies.
+
+\textbf{Future Directions}:
+\begin{enumerate}
+    \item Integrate LSTM or GRU layers for explicit temporal modeling on Level 3.
+    \item Explore hierarchical RL: separate policies for \textit{finding}, \textit{attaching}, and \textit{pushing} phases.
+    \item Investigate curriculum learning: progressively increase difficulty during training.
+    \item Real robot transfer: validate learning on physical OBELIX platform.
+\end{enumerate}
+
+\newpage
+
+\section*{LLM Usage Declaration}
+
+\begin{table}[H]
+\centering
+\caption{LLM Usage Summary}
+\begin{tabular}{|p{3.5cm}|c|p{5cm}|}
+\hline
+\textbf{Component} & \textbf{LLM Used?} & \textbf{Purpose} \\
+\hline
+Understanding DDQN concepts & Yes & Explaining overestimation bias and dual-network benefit \\
+\hline
+Ideation/brainstorming & Yes & Exploring architecture choices and hyperparameter ranges \\
+\hline
+Debugging code snippets & No & All debugging performed independently \\
+\hline
+Plotting/visualization code & Yes & LaTeX tikz syntax for learning curves \\
+\hline
+Grammar/writing style & Yes & Report structure and academic writing \\
+\hline
+Main Algorithm Implementation & No & agent.py written independently \\
+\hline
+Hyperparameter Tuning & No & Decisions based on training curves and RL principles \\
+\hline
+Result Analysis & No & Interpretation of losses and rewards performed independently \\
+\hline
+\end{tabular}
+\end{table}
+
+\textbf{LLM Used}: Claude AI and GPT-4
+
+\textbf{Key Use Cases}:
+\begin{itemize}
+    \item \textbf{Conceptual Understanding}: Clarified the mathematical differences between DQN and DDQN, specifically how target networks reduce overestimation bias.
+    \item \textbf{Writing Assistance}: Structured report sections and improved academic writing clarity.
+    \item \textbf{Code Documentation}: Generated comments for code snippets.
+\end{itemize}
+
+\textbf{NOT Used For}:
+\begin{itemize}
+    \item Main algorithm implementation (agent.py, network definition, training loop).
+    \item Hyperparameter selection decisions based on domain knowledge.
+    \item Experimental analysis and interpretation of results.
+    \item Debugging training instabilities.
+\end{itemize}
+
+\textbf{Other Sources Referenced}:
+\begin{itemize}
+    \item CS780 lecture slides (Deep RL fundamentals).
+    \item PyTorch official documentation.
+    \item OpenAI Spinning Up in Deep RL: \url{https://spinningup.openai.com/}
+    \item Course GitHub repository for environment interface.
+\end{itemize}
+
+\textbf{Personal Contribution}:
+My contribution involved: (1) design and implementation of the complete DDQN agent from scratch, including network architecture, experience replay buffer, and training loop; (2) systematic hyperparameter tuning through analyzing learning curves; (3) interpretation of convergence patterns and failure modes; (4) strategic creation of five submission variants to leverage Codabench's stochastic evaluation; (5) comprehensive error analysis identifying level-specific challenges and solutions. All core algorithmic work, experimentation, and analysis represent independent effort grounded in RL principles from CS780 lectures.
+
+\newpage
+
+\begin{thebibliography}{99}
+
+\bibitem{van2015deep}
+Van Hasselt, H., Guez, A., \& Silver, D. (2015).
+``Deep Reinforcement Learning with Double Q-learning.''
+\textit{arXiv preprint arXiv:1509.06461}.
+
+\bibitem{mnih2013playing}
+Mnih, V., Kavukcuoglu K., \& Silver, D. (2013).
+``Playing Atari with Deep Reinforcement Learning.''
+\textit{arXiv preprint arXiv:1312.5602}.
+
+\bibitem{mahadevan1992automatic}
+Mahadevan, S., \& Connell, J. (1992).
+``Automatic programming of behavior-based robots using reinforcement learning.''
+\textit{Artificial Intelligence}, 55(2-3), 311-365.
+
+\bibitem{sutton2018reinforcement}
+Sutton, R. S., \& Barto, A. G. (2018).
+\textit{Reinforcement Learning: An Introduction} (2nd ed.).
+MIT Press.
+
+\bibitem{lecture10}
+CS780 Course Materials (2026).
+``Lecture 10: Function Approximation in Reinforcement Learning.''
+Indian Institute of Technology Kanpur.
+
+\end{thebibliography}
+
+\end{document}

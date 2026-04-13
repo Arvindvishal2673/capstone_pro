@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# PyTorch and ML
+*.pth.bak
+*.pth.old
+checkpoint_*.pth
+logs/
+runs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# LaTeX compilation artifacts
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.dvi
+*.pdf
+
+# OS
+Thumbs.db
+.DS_Store
+.travis.yml
+
+# Project-specific
+training_logs/
+*.csv
+*.tmp
+.env
