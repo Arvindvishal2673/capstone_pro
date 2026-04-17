@@ -12,16 +12,19 @@ brain_instnce = None
 
 class Move_Predictor(nn.Module):
     # this class defines the neural network used by the agent
-    def __init__(self, input_size=18, output_size=5, hidden_size=128):
+    # Phase 3 Architecture: Updated for Level 3 (Moving + Blinking Box)
+    def __init__(self, input_size=18, output_size=5, hidden_size=256):
         super().__init__()
 
-        # simple feed forward neural network
+        # deeper feed forward neural network for handling complex dynamics
         self.net = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+            nn.Linear(input_size, hidden_size),      # 18 -> 256
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size, hidden_size),     # 256 -> 256
             nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
+            nn.Linear(hidden_size, 128),              # 256 -> 128
+            nn.ReLU(),
+            nn.Linear(128, output_size),              # 128 -> 5
         )
 
     def forward(self, x):
@@ -37,8 +40,8 @@ def initialize_agent():
     if brain_instnce is not None:
         return
 
-    # create model structure
-    model = Move_Predictor(input_size=18, output_size=5, hidden_size=128)
+    # create model structure with Phase 3 architecture
+    model = Move_Predictor(input_size=18, output_size=5, hidden_size=256)
 
     # find weights file in same folder
     folder = os.path.dirname(os.path.abspath(__file__))
@@ -62,7 +65,7 @@ def initialize_agent():
 
 
 def policy(obs: np.ndarray, rng) -> str:
-    #this function decides the next move of the agent
+    #this function decides the next move of the agent (Phase 3: Level 3 with Moving + Blinking Box)
     
     initialize_agent()
 

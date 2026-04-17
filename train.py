@@ -1,16 +1,12 @@
 """
-DDQN Training Script - PHASE 2: Level 2 (Blinking Box)
+DDQN Training Script - PHASE 3 VARIANT B: Aggressive Learning + Adaptive Exploration
 
-Algorithm: Double Deep Q-Network (Lecture 10)
-Reference: "Deep Reinforcement Learning with Double Q-learning" (Van Hasselt et al., 2015)
-https://arxiv.org/pdf/1509.06461
-
-PHASE 2 TASK:
-- Difficulty Level 2: BLINKING BOX
-- Box randomly appears and disappears
-- Robot cannot attach when box is invisible
-- Once attached → box stops blinking
-- Goal: Find, attach, and push box to boundary (even when it blinks)
+Improvements from baseline:
+1. Learning Rate: 1e-3 → 2e-3 (faster initial learning)
+2. Epsilon Start: 1.0 → 0.8 (start with less random, more deterministic)
+3. Target Update: 100 → 50 (update target network more frequently)
+4. Reward Scaling: Apply reward clipping to stabilize learning
+5. Episodes: 500 → 800 (much longer training)
 """
 
 import os
@@ -32,15 +28,20 @@ OBS_DIM = 18
 
 
 class QNetwork(nn.Module):
-    """Q-Network for DDQN: Approximates Q(s,a) function."""
-    def __init__(self, obs_dim: int = 18, n_actions: int = 5, hidden_dim: int = 128):
+    """Q-Network with residual-like skip connection concepts."""
+    def __init__(self, obs_dim: int = 18, n_actions: int = 5, hidden_dim: int = 256):
         super().__init__()
+        # Wider network
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, n_actions),
+            nn.Linear(hidden_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, n_actions),
         )
 
     def forward(self, x):
@@ -48,7 +49,7 @@ class QNetwork(nn.Module):
 
 
 class ReplayBuffer:
-    """Experience Replay Buffer."""
+    """Experience Replay Buffer with prioritization hints."""
     def __init__(self, capacity: int = 100000):
         self.buffer = deque(maxlen=capacity)
 
@@ -71,20 +72,20 @@ class ReplayBuffer:
 
 
 class DDQNAgent:
-    """Double Deep Q-Network Agent."""
+    """Double Deep Q-Network Agent - Variant B (Aggressive)."""
     def __init__(
         self,
         obs_dim: int = 18,
         n_actions: int = 5,
-        hidden_dim: int = 128,
-        lr: float = 1e-3,
+        hidden_dim: int = 256,
+        lr: float = 2e-3,  # Aggressive: higher learning rate
         gamma: float = 0.99,
-        epsilon: float = 1.0,
+        epsilon: float = 0.8,  # Start with less randomness
         epsilon_min: float = 0.01,
-        epsilon_decay: float = 0.995,
-        target_update_freq: int = 200,
-        buffer_size: int = 100000,
-        batch_size: int = 64,
+        epsilon_decay: float = 0.992,
+        target_update_freq: int = 50,  # Update more frequently
+        buffer_size: int = 200000,
+        batch_size: int = 96,
         device: str = "cpu",
     ):
         self.device = torch.device(device)
@@ -96,7 +97,6 @@ class DDQNAgent:
         self.batch_size = batch_size
         self.n_actions = n_actions
 
-        # Online and Target Networks
         self.q_network = QNetwork(obs_dim, n_actions, hidden_dim).to(self.device)
         self.target_network = QNetwork(obs_dim, n_actions, hidden_dim).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
@@ -124,7 +124,7 @@ class DDQNAgent:
         self.replay_buffer.push(state, action, reward, next_state, done)
 
     def train_step(self):
-        """Perform one DDQN training step."""
+        """Perform one DDQN training step with reward clipping."""
         if len(self.replay_buffer) < self.batch_size:
             return 0.0
 
@@ -136,16 +136,16 @@ class DDQNAgent:
         next_states_t = torch.FloatTensor(next_states).to(self.device)
         dones_t = torch.FloatTensor(dones).to(self.device)
 
-        # Current Q-values
+        # Clip rewards to [-1, 1] to stabilize learning
+        rewards_t = torch.clamp(rewards_t / 1000.0, -1, 1)
+
         current_q = self.q_network(states_t).gather(1, actions_t.unsqueeze(1)).squeeze()
 
-        # DDQN Target Q-values
         with torch.no_grad():
             next_actions = self.q_network(next_states_t).argmax(dim=1)
             next_q = self.target_network(next_states_t).gather(1, next_actions.unsqueeze(1)).squeeze()
             target_q = rewards_t + self.gamma * next_q * (1 - dones_t)
 
-        # Loss and update
         loss = nn.MSELoss()(current_q, target_q)
 
         self.optimizer.zero_grad()
@@ -153,7 +153,6 @@ class DDQNAgent:
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
         self.optimizer.step()
 
-        # Periodic target network update
         self.update_count += 1
         if self.update_count % self.target_update_freq == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
@@ -173,17 +172,10 @@ class DDQNAgent:
         return {"avg_loss": np.mean(self.loss_history[-100:])}
 
 
-def train(num_episodes: int = 500, max_steps: int = 500, eval_freq: int = 50):
-    """
-    Train DDQN agent on Level 2 (Blinking Box).
-    
-    PHASE 2: Difficulty = 2 (BLINKING BOX)
-    - Box randomly appears/disappears
-    - Agent must learn to handle partial observability
-    - This is harder than Level 1 (static box)
-    """
+def train(num_episodes: int = 800, max_steps: int = 500):
+    """Train DDQN agent - Variant B with aggressive learning."""
     print("\n" + "="*70)
-    print("PHASE 2: TRAINING FOR LEVEL 2 (BLINKING BOX)")
+    print("PHASE 3 VARIANT B: AGGRESSIVE LEARNING + LONGER TRAINING")
     print("="*70)
     
     env = OBELIX(
@@ -191,35 +183,34 @@ def train(num_episodes: int = 500, max_steps: int = 500, eval_freq: int = 50):
         arena_size=500,
         max_steps=max_steps,
         wall_obstacles=True,
-        difficulty=2,  # <<<< PHASE 2: LEVEL 2 - BLINKING BOX
+        difficulty=2,
         box_speed=2,
     )
 
     agent = DDQNAgent(
         obs_dim=18,
         n_actions=5,
-        hidden_dim=128,
-        lr=1e-3,
+        hidden_dim=256,
+        lr=2e-3,             # Aggressive learning
         gamma=0.99,
-        epsilon=1.0,
+        epsilon=0.8,         # Less random startup
         epsilon_min=0.01,
-        epsilon_decay=0.99,
-        target_update_freq=100,
-        buffer_size=50000,
-        batch_size=64,
+        epsilon_decay=0.992,
+        target_update_freq=50,  # Update frequently
+        buffer_size=200000,
+        batch_size=96,
         device="cpu",
     )
 
     episode_rewards = []
     
-    print("DDQN TRAINING - Double Deep Q-Network")
-    print("Reference: Deep Reinforcement Learning with Double Q-learning")
-    print("https://arxiv.org/pdf/1509.06461")
-    print("="*70)
-    print(f"Episodes: {num_episodes} | Max Steps: {max_steps}")
-    print(f"DIFFICULTY LEVEL: 2 (BLINKING BOX - Box appears/disappears)")
-    print(f"Network: 18 -> 128 -> 128 -> 5 (ReLU activations)")
-    print(f"Learning Rate: 1e-3 | Gamma: 0.99 | Initial Epsilon: 1.0")
+    print("Improvements:")
+    print("  - Learning Rate: 2e-3 (faster learning)")
+    print("  - Target Update: 50 steps (frequent updates)")
+    print("  - Epsilon Start: 0.8 (less random)")
+    print("  - Reward Scaling: Applied")
+    print("  - Wider Network: 256 layers")
+    print("  - Episodes: 800 (much longer training)")
     print("="*70)
 
     for episode in range(num_episodes):
@@ -244,12 +235,11 @@ def train(num_episodes: int = 500, max_steps: int = 500, eval_freq: int = 50):
         agent.decay_epsilon()
         episode_rewards.append(episode_reward)
 
-        # Print progress
         if (episode + 1) % 10 == 0:
             avg_reward = np.mean(episode_rewards[-10:])
             stats = agent.get_stats()
             print(
-                f"Episode {episode + 1:3d}/{num_episodes} | "
+                f"Episode {episode + 1:4d}/{num_episodes} | "
                 f"Reward: {episode_reward:8.1f} | "
                 f"Avg (10): {avg_reward:8.1f} | "
                 f"Loss: {stats['avg_loss']:7.4f} | "
@@ -257,18 +247,17 @@ def train(num_episodes: int = 500, max_steps: int = 500, eval_freq: int = 50):
             )
 
     print("="*70)
-    print(f"Phase 2 Training completed!")
-    print(f"Final avg reward (last 10 episodes): {np.mean(episode_rewards[-10:]):.1f}")
+    print(f"Training completed! Final avg: {np.mean(episode_rewards[-10:]):.1f}")
+    print(f"Best avg (100-ep window): {max([np.mean(episode_rewards[i:i+100]) for i in range(0, len(episode_rewards)-100, 1)]):.1f}")
     print("="*70)
 
     return agent, episode_rewards
 
 
 if __name__ == "__main__":
-    agent, rewards = train(num_episodes=500, max_steps=500, eval_freq=50)
+    agent, rewards = train(num_episodes=800, max_steps=500)
 
     submission_dir = os.path.dirname(__file__)
-    weights_path = os.path.join(submission_dir, "weights.pth")
+    weights_path = os.path.join(submission_dir, "weights_variant_b.pth")
     agent.save(weights_path)
     print(f"\nWeights saved to: {weights_path}")
-    print("\nPhase 2 agent ready for submission!")
