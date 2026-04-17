@@ -42,23 +42,18 @@ def initialize_agent():
 
     # find weights file in same folder
     folder = os.path.dirname(os.path.abspath(__file__))
-    
-    # Try to load freshly trained weights first, then fall back to default weights
-    weight_path_fresh = os.path.join(folder, "weights_trained_fresh.pth")
-    weight_path_default = os.path.join(folder, "weights.pth")
-    
-    weight_path = weight_path_fresh if os.path.exists(weight_path_fresh) else weight_path_default
+    weight_path = os.path.join(folder, "weights.pth")
 
     if os.path.exists(weight_path):
         try:
             # load trained weights
             weights = torch.load(weight_path, map_location="cpu")
             model.load_state_dict(weights)
-            print(f"✅ Pretrained weights loaded successfully from: {os.path.basename(weight_path)}")
+            print("pretrained weights loaded successfully")
         except Exception as e:
-            print(f"❌ Could not load weights: {e}")
+            print("could not load weights:", e)
     else:
-        print("⚠️ Weights file not found, agent will act randomly")
+        print("weights file not found, agent will act randomly")
 
     # we only use the model for prediction
     model.eval()
